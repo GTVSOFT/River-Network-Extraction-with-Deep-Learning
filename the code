@@ -1,0 +1,170 @@
+import os
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import matplotlib.pyplot as plt
+
+# ----------------------------
+# 1. Data Preparation
+# ----------------------------
+# Define image size
+IMG_HEIGHT = 256
+IMG_WIDTH = 256
+BATCH_SIZE = 8
+
+# Assume the dataset is organized as:
+# dataset/
+#    images/
+#    masks/
+
+train_image_dir = 'dataset/images/'
+train_mask_dir = 'dataset/masks/'
+
+# Data generator
+image_datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+mask_datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+
+train_image_generator = image_datagen.flow_from_directory(
+    train_image_dir,
+    target_size=(IMG_HEIGHT, IMG_WIDTH),
+    batch_size=BATCH_SIZE,
+    class_mode=None,
+    subset='training',
+    seed=42)
+
+train_mask_generator = mask_datagen.flow_from_directory(
+    train_mask_dir,
+    target_size=(IMG_HEIGHT, IMG_WIDTH),
+    batch_size=BATCH_SIZE,
+    class_mode=None,
+    subset='training',
+    seed=42)
+
+val_image_generator = image_datagen.flow_from_directory(
+    train_image_dir,
+    target_size=(IMG_HEIGHT, IMG_WIDTH),
+    batch_size=BATCH_SIZE,
+    class_mode=None,
+    subset='validation',
+    seed=42)
+
+val_mask_generator = mask_datagen.flow_from_directory(
+    train_mask_dir,
+    target_size=(IMG_HEIGHT, IMG_WIDTH),
+    batch_size=BATCH_SIZE,
+    class_mode=None,
+    subset='validation',
+    seed=42)
+
+# Combine generators
+def train_generator():
+    while True:
+        imgs = train_image_generator.next()
+        masks = train_mask_generator.next()
+        yield imgs, masks
+
+def val_generator():
+    while True:
+        imgs = val_image_generator.next()
+        masks = val_mask_generator.next()
+        yield imgs, masks
+
+# ----------------------------
+# 2. Model Building (U-Net)
+# ----------------------------
+def unet_model(input_size=(IMG_HEIGHT, IMG_WIDTH, 3)):
+    inputs = keras.Input(input_size)
+
+    # Encoding
+    c1 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(inputs)
+    c1 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(c1)
+    p1 = layers.MaxPooling2D((2, 2))(c1)
+
+    c2 = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(p1)
+    c2 = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(c2)
+    p2 = layers.MaxPooling2D((2, 2))(c2)
+
+    c3 = layers.Conv2D(256, (3, 3), activation='relu', padding='same')(p2)
+    c3 = layers.Conv2D(256, (3, 3), activation='relu', padding='same')(c3)
+    p3 = layers.MaxPooling2D((2, 2))(c3)
+
+    # Bottleneck
+    c4 = layers.Conv2D(512, (3, 3), activation='relu', padding='same')(p3)
+    c4 = layers.Conv2D(512, (3, 3), activation='relu', padding='same')(c4)
+
+    # Decoding
+    u5 = layers.UpSampling2D((2, 2))(c4)
+    u5 = layers.concatenate([u5, c3])
+    c5 = layers.Conv2D(256, (3, 3), activation='relu', padding='same')(u5)
+    c5 = layers.Conv2D(256, (3, 3), activation='relu', padding='same')(c5)
+
+    u6 = layers.UpSampling2D((2, 2))(c5)
+    u6 = layers.concatenate([u6, c2])
+    c6 = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(u6)
+    c6 = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(c6)
+
+    u7 = layers.UpSampling2D((2, 2))(c6)
+    u7 = layers.concatenate([u7, c1])
+    c7 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(u7)
+    c7 = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(c7)
+
+    outputs = layers.Conv2D(1, (1, 1), activation='sigmoid')(c7)
+
+    model = keras.Model(inputs=[inputs], outputs=[outputs])
+
+    return model
+
+# Instantiate and compile the model
+model = unet_model()
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+# ----------------------------
+# 3. Training
+# ----------------------------
+EPOCHS = 20
+steps_per_epoch = len(train_image_generator)
+validation_steps = len(val_image_generator)
+
+history = model.fit(
+    train_generator(),
+    steps_per_epoch=steps_per_epoch,
+    epochs=EPOCHS,
+    validation_data=val_generator(),
+    validation_steps=validation_steps
+)
+
+# ----------------------------
+# 4. Prediction and Visualization
+# ----------------------------
+def plot_sample(image, mask, prediction):
+    plt.figure(figsize=(12, 4))
+
+    plt.subplot(1, 3, 1)
+    plt.title('Image')
+    plt.imshow(image)
+    plt.axis('off')
+
+    plt.subplot(1, 3, 2)
+    plt.title('Ground Truth')
+    plt.imshow(mask.squeeze(), cmap='gray')
+    plt.axis('off')
+
+    plt.subplot(1, 3, 3)
+    plt.title('Prediction')
+    plt.imshow(prediction.squeeze(), cmap='gray')
+    plt.axis('off')
+
+    plt.show()
+
+# Take a test image
+test_image = next(val_image_generator)
+test_mask = next(val_mask_generator)
+predicted_mask = model.predict(test_image)
+
+# Plot first sample
+plot_sample(test_image[0], test_mask[0], predicted_mask[0])
+
+# Save model
+model.save('river_network_unet_model.h5')
